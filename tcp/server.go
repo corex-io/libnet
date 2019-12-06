@@ -1,29 +1,54 @@
 package tcp
 
 import (
-	"bufio"
-	"context"
-	"fmt"
 	"net"
-	"time"
 
 	"github.com/corex-io/log"
 )
 
-const endl = '\n'
+// Handler tcp handler
+type Handler interface {
+	ServeTCP(*net.TCPConn)
+}
+
+// HandlerFunc handler func
+type HandlerFunc func(*net.TCPConn)
+
+// ServeTCP implement Handler interface
+func (f HandlerFunc) ServeTCP(conn *net.TCPConn) {
+	f(conn)
+}
 
 // Server tcp server
 type Server struct {
-	opts   Options
-	listen *net.TCPListener
+	opts          Options
+	limit         chan struct{}
+	listen        *net.TCPListener
+	Handler       Handler
 }
 
 // New new tcp server
 func New(opts ...Option) *Server {
 	options := newOptions(opts...)
-	return &Server{
-		opts: options,
+	server := &Server{
+		opts:  options,
+		limit: make(chan struct{}, options.Max),
+		Handler: &defaultHandler{
+			delim:        options.Endl,
+			HandlePacket: options.handlePacket,
+		},
 	}
+	return server
+}
+
+// Handle set handle
+func (s *Server) Handle(handler Handler) {
+	s.Handler = handler
+}
+
+// HandleFunc set Handle func
+func (s *Server) HandleFunc(handlerFunc HandlerFunc) {
+	s.Handler = handlerFunc
 }
 
 // Init init
@@ -40,51 +65,34 @@ func (s *Server) Init(opts ...Option) error {
 	if err != nil {
 		return err
 	}
+	defer s.listen.Close()
+	log.Infof("listen %s://%s", tcpaddr.Network(), tcpaddr.String())
 
-	log.Infof("listen %v", tcpaddr.String())
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 	for {
 		conn, err := s.listen.AcceptTCP()
 		if err != nil {
 			return err
 		}
-		log.Infof("accept %s...", conn.RemoteAddr().String())
-		go func() {
-			if err := s.process(ctx, conn); err != nil {
-				log.Errorf("process: %v", err)
-			}
-		}()
-	}
-}
+		log.Debugf("accept %s...", conn.RemoteAddr().String())
 
-func (s *Server) process(ctx context.Context, conn *net.TCPConn) error {
-	stime := time.Now()
-	log.Infof("recv: %v, %p", stime.Nanosecond(), conn)
-	defer func() {
-		conn.Close()
-		log.Infof("close Recv %v, cost=%v", stime.Nanosecond(), time.Since(stime))
-	}()
-	buf := bufio.NewReader(conn)
-	for {
 		select {
-		case <-ctx.Done():
-			return ctx.Err()
+		case s.limit <- struct{}{}:
+			go func() {
+				defer func() {
+					<-s.limit
+					conn.Close()
+				}()
+				s.Handler.ServeTCP(conn)
+			}()
 		default:
-			bytes, err := buf.ReadBytes(endl)
-			if err != nil {
-				return err
+			if _, err = conn.Write([]byte("Too many connections.")); err != nil {
+				log.Errorf("write %w", err)
 			}
-			resp, err := s.opts.handleFunc(bytes)
-			if err != nil {
-				return fmt.Errorf("handle: %w", err)
-			}
-			if len(resp) == 0 {
-				continue
-			}
-			if _, err := conn.Write(resp); err != nil {
-				return fmt.Errorf("resp: %w", err)
-			}
+			conn.Close()
 		}
 	}
+}
+// Close close
+func (s *Server) Close() error {
+	return s.listen.Close()
 }
