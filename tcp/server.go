@@ -1,54 +1,33 @@
 package tcp
 
 import (
+	"bufio"
+	"context"
+	"fmt"
+	"io"
 	"net"
+
+	"github.com/corex-io/limit"
 
 	"github.com/corex-io/log"
 )
 
-// Handler tcp handler
-type Handler interface {
-	ServeTCP(*net.TCPConn)
-}
-
-// HandlerFunc handler func
-type HandlerFunc func(*net.TCPConn)
-
-// ServeTCP implement Handler interface
-func (f HandlerFunc) ServeTCP(conn *net.TCPConn) {
-	f(conn)
-}
+const endl = '\n'
 
 // Server tcp server
 type Server struct {
-	opts          Options
-	limit         chan struct{}
-	listen        *net.TCPListener
-	Handler       Handler
+	opts   Options
+	limit  *limit.Limit
+	listen *net.TCPListener
 }
 
 // New new tcp server
 func New(opts ...Option) *Server {
 	options := newOptions(opts...)
-	server := &Server{
+	return &Server{
 		opts:  options,
-		limit: make(chan struct{}, options.Max),
-		Handler: &defaultHandler{
-			delim:        options.Endl,
-			HandlePacket: options.handlePacket,
-		},
+		limit: limit.New(limit.Max(options.Max)),
 	}
-	return server
-}
-
-// Handle set handle
-func (s *Server) Handle(handler Handler) {
-	s.Handler = handler
-}
-
-// HandleFunc set Handle func
-func (s *Server) HandleFunc(handlerFunc HandlerFunc) {
-	s.Handler = handlerFunc
 }
 
 // Init init
@@ -65,34 +44,61 @@ func (s *Server) Init(opts ...Option) error {
 	if err != nil {
 		return err
 	}
-	defer s.listen.Close()
-	log.Infof("listen %s://%s", tcpaddr.Network(), tcpaddr.String())
 
+	log.Debugf("listen %v", tcpaddr.String())
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	for {
+		s.limit.Add(1)
 		conn, err := s.listen.AcceptTCP()
 		if err != nil {
 			return err
 		}
 		log.Debugf("accept %s...", conn.RemoteAddr().String())
-
-		select {
-		case s.limit <- struct{}{}:
-			go func() {
-				defer func() {
-					<-s.limit
-					conn.Close()
-				}()
-				s.Handler.ServeTCP(conn)
+		go func() {
+			defer func() {
+				s.limit.Done()
+				conn.Close()
 			}()
-		default:
-			if _, err = conn.Write([]byte("Too many connections.")); err != nil {
-				log.Errorf("write %w", err)
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				default:
+					if err := s.process(ctx, conn); err != nil {
+						log.Errorf("process: %v", err)
+						if err == io.EOF {
+							return
+						}
+					}
+				}
 			}
-			conn.Close()
-		}
+
+		}()
 	}
 }
-// Close close
-func (s *Server) Close() error {
-	return s.listen.Close()
+
+func (s *Server) process(ctx context.Context, conn *net.TCPConn) error {
+	buf := bufio.NewReader(conn)
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+			bytes, err := buf.ReadBytes(endl)
+			if err != nil {
+				return err
+			}
+			resp, err := s.opts.handleFunc(bytes)
+			if err != nil {
+				log.Errorf("handle: resp=%s, err=%v, bytes=%s", string(resp), err, string(bytes))
+			}
+			if len(resp) == 0 {
+				continue
+			}
+			if _, err := conn.Write(resp); err != nil {
+				return fmt.Errorf("resp: %w", err)
+			}
+		}
+	}
 }
