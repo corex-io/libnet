@@ -133,7 +133,7 @@ func (i *ICMP) echo(ctx context.Context, addr string, seq int) (*EchoStat, error
 	if seq > 65535 {
 		return nil, fmt.Errorf("Invalid ICMP Sequence number. Value must be 0<=N<2^16")
 	}
-	conn, err := net.Dial("udp:icmp", addr)
+	conn, err := net.Dial("ip4:icmp", addr)
 	if err != nil {
 		return nil, fmt.Errorf("dial fail: %v", err)
 	}
