@@ -8,6 +8,7 @@ import (
 	"os/signal"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/corex-io/libnet/icmp"
 )
@@ -45,7 +46,7 @@ func main() {
 	signal.Notify(ch, os.Interrupt, os.Kill)
 
 	ctx, cancel := context.WithCancel(context.Background())
-	ping := icmp.New(icmp.Count(*count), icmp.Size(*pktsize), icmp.Timeout(*timeout))
+	ping := icmp.New(icmp.Count(*count), icmp.Size(*pktsize), icmp.Timeout(time.Duration(*timeout)*time.Second))
 
 	ch2 := make(chan struct{}, len(hosts))
 

@@ -2,13 +2,14 @@ package icmp
 
 import (
 	"math"
+	"time"
 )
 
 // Options options
 type Options struct {
 	count   int
 	size    int
-	timeout int
+	timeout time.Duration
 }
 
 // Option Options function
@@ -18,7 +19,7 @@ func newOptions(opts ...Option) Options {
 	opt := Options{
 		size:    56,
 		count:   4,
-		timeout: 5,
+		timeout: 3 * time.Second,
 	}
 	for _, o := range opts {
 		o(&opt)
@@ -34,7 +35,7 @@ func Size(size int) Option {
 }
 
 // Timeout set timeout
-func Timeout(timeout int) Option {
+func Timeout(timeout time.Duration) Option {
 	return func(o *Options) {
 		o.timeout = timeout
 	}

@@ -99,7 +99,9 @@ Loop:
 		}
 		select {
 		case <-ctx.Done():
-			_, _ = fmt.Fprintf(os.Stdout, "\n")
+			if print {
+				_, _ = fmt.Fprintf(os.Stdout, "\n")
+			}
 			break Loop
 		default:
 			stat := &EchoStat{}
@@ -131,7 +133,7 @@ func (i *ICMP) echo(ctx context.Context, addr string, seq int) (*EchoStat, error
 	if seq > 65535 {
 		return nil, fmt.Errorf("Invalid ICMP Sequence number. Value must be 0<=N<2^16")
 	}
-	conn, err := net.Dial("ip4:icmp", addr)
+	conn, err := net.Dial("udp:icmp", addr)
 	if err != nil {
 		return nil, fmt.Errorf("dial fail: %v", err)
 	}
@@ -151,7 +153,7 @@ func (i *ICMP) echo(ctx context.Context, addr string, seq int) (*EchoStat, error
 		return nil, err
 	}
 
-	conn.SetDeadline(time.Now().Add(time.Duration(i.opts.timeout) * time.Second))
+	conn.SetDeadline(time.Now().Add(i.opts.timeout))
 
 	now := time.Now()
 
