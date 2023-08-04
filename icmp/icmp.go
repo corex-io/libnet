@@ -94,9 +94,6 @@ func (i *ICMP) ping(ctx context.Context, host string, print bool) (Statistics, e
 
 Loop:
 	for seq := 0; seq < i.opts.count; seq++ {
-		if seq != 0 {
-			time.Sleep(time.Second)
-		}
 		select {
 		case <-ctx.Done():
 			if print {
@@ -104,6 +101,9 @@ Loop:
 			}
 			break Loop
 		default:
+			if seq != 0 {
+				time.Sleep(100 * time.Millisecond)
+			}
 			stat := &EchoStat{}
 			stat, err = i.echo(ctx, addr, seq)
 			stats.update(stat)
