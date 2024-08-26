@@ -1,13 +1,13 @@
 package icmp
 
 import (
+	"bytes"
 	"fmt"
-	"io"
 	"math"
 	"time"
 )
 
-// Statistics Statistics
+// Statistics ..
 type Statistics struct {
 	Host        string
 	Transmitted int
@@ -40,18 +40,20 @@ func (stats *Statistics) update(stat *EchoStat) {
 	stats.Loss = float64((stats.Transmitted-stats.Received)*100) / float64(stats.Transmitted)
 }
 
-func (stats Statistics) String() string {
+func (stats *Statistics) String() string {
 	return fmt.Sprintf("PING %s: %d packets transmitted, %d received, %.2f%% packet loss",
 		stats.Host, stats.Transmitted, stats.Received, stats.Loss)
 }
 
 // Print print
-func (stats Statistics) Print(w io.Writer) {
-	fmt.Fprintf(w, "--- %s ping statistics ---\n", stats.Host)
-	fmt.Fprintf(w, "%d packets transmitted, %d received, %.2f%% packet loss, time %s\n",
-		stats.Transmitted, stats.Received, stats.Loss, stats.Time)
+func (stats *Statistics) Print() string {
+	buf := &bytes.Buffer{}
+	buf.WriteString(fmt.Sprintf("--- %s ping statistics ---\n", stats.Host))
+	buf.WriteString(fmt.Sprintf("%d packets transmitted, %d received, %.2f%% packet loss, time %s\n",
+		stats.Transmitted, stats.Received, stats.Loss, stats.Time))
 	if stats.Received == stats.Transmitted {
-		fmt.Fprintf(w, "rtt min/avg/max/mdev = %.3f/%.3f/%.3f/%.3f ms\n",
-			stats.minRTT.Seconds()*1000, stats.avgRTT.Seconds()*1000, stats.maxRTT.Seconds()*1000, stats.mdevRTT.Seconds()*1000)
+		buf.WriteString(fmt.Sprintf("rtt min/avg/max/mdev = %.3f/%.3f/%.3f/%.3f ms\n",
+			stats.minRTT.Seconds()*1000, stats.avgRTT.Seconds()*1000, stats.maxRTT.Seconds()*1000, stats.mdevRTT.Seconds()*1000))
 	}
+	return buf.String()
 }

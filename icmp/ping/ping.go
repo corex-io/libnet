@@ -7,14 +7,13 @@ import (
 	"os"
 	"os/signal"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/corex-io/libnet/icmp"
 )
 
 func main() {
-	count := flag.Int("c", 0, "count")
+	count := flag.Int("c", 4, "count")
 	pktsize := flag.Int("s", 56, "packetsize")
 	timeout := flag.Int("t", 5, "timeout")
 	flag.Parse()
@@ -41,29 +40,20 @@ func main() {
 		return
 	}
 
-	var wg sync.WaitGroup
 	ch := make(chan os.Signal)
 	signal.Notify(ch, os.Interrupt, os.Kill)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	ping := icmp.New(icmp.Count(*count), icmp.Size(*pktsize), icmp.Timeout(time.Duration(*timeout)*time.Second))
+	ping := icmp.New(
+		icmp.Count(*count),
+		icmp.Size(*pktsize),
+		icmp.Timeout(time.Duration(*timeout)*time.Second),
+		icmp.Log(os.Stdout),
+	)
 
-	ch2 := make(chan struct{}, len(hosts))
-
-	for _, host := range hosts {
-		wg.Add(1)
-		go func(host string) {
-			defer wg.Done()
-			ping.Ping(ctx, host)
-
-		}(host)
+	stats, err := ping.Ping(context.Background(), hosts[0])
+	if err != nil {
+		fmt.Println("ping", hosts[0], "fail:", err)
 	}
-
-	select {
-	case <-ch:
-		cancel()
-	case <-ch2:
-	}
-	wg.Wait()
+	fmt.Println(stats.Print())
 
 }

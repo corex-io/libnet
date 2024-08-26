@@ -2,11 +2,16 @@ package icmp
 
 import (
 	"context"
+	"os"
 	"testing"
 )
 
-func TestPing(t *testing.T) {
-	ping := New()
-	stats, err := ping.Send(context.Background(), "127.0.0.1")
-	t.Logf("%#v, %#v", stats, err)
+func TestPingPing(t *testing.T) {
+	ping := New(Count(4))
+	stat, err := ping.Ping(context.Background(), "qq.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	stat.Print(os.Stdout)
+	t.Logf("%#v, %#v", stat, err)
 }

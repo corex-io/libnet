@@ -5,15 +5,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"math"
-	"math/rand"
 	"net"
 	"os"
 	"time"
 
 	"golang.org/x/net/icmp"
 	"golang.org/x/net/ipv4"
-	"golang.org/x/net/ipv6"
 )
 
 // proto
@@ -24,19 +21,6 @@ const (
 	//ipv6Proto = map[string]string{"ip": "ip6:ipv6-icmp", "udp": "udp6"}
 )
 
-// Lookup DNS
-func Lookup(host string) (string, error) {
-	addrs, err := net.LookupHost(host)
-	if err != nil {
-		return "", err
-	}
-	if len(addrs) == 0 {
-		return "", errors.New("unknown host")
-	}
-	rd := rand.New(rand.NewSource(time.Now().UnixNano()))
-	return addrs[rd.Intn(len(addrs))], nil
-}
-
 // EchoStat echo reply stat
 type EchoStat struct {
 	Seq  int
@@ -46,94 +30,60 @@ type EchoStat struct {
 
 // ICMP icmp config
 type ICMP struct {
-	opts Options
+	opts []Option
 	ID   int
 }
 
 // New ping
 func New(opts ...Option) *ICMP {
-	options := newOptions(opts...)
 	return &ICMP{
-		opts: options,
+		opts: opts,
 		ID:   os.Getpid() & 0xFFFF,
 	}
 }
 
-// Send without stdout
-func (i *ICMP) Send(ctx context.Context, host string) (Statistics, error) {
-	return i.ping(ctx, host, false)
-}
+// Ping without stdout
+func (i *ICMP) Ping(ctx context.Context, host string, opts ...Option) (*Statistics, error) {
+	options := newOptions(i.opts, opts...)
+	stats := &Statistics{Host: host, minRTT: -1, Loss: -1}
 
-// Ping ping
-func (i *ICMP) Ping(ctx context.Context, host string) {
-	_, _ = i.ping(ctx, host, true)
-}
-
-func (i *ICMP) ping(ctx context.Context, host string, print bool) (Statistics, error) {
-	stats := Statistics{
-		Host:   host,
-		minRTT: math.MaxInt64,
-		Loss:   100,
-	}
-
-	addr, err := Lookup(host)
+	addr, err := net.ResolveIPAddr("ip", host)
 	if err != nil {
+		fmt.Println(err.Error())
+		//ping: cannot resolve qq.com: Unknown host
 		return stats, err
 	}
 
-	// if ip.To4() != nil {
-	// 	proto = "v4"
-	// 	network = "ip4:icmp"
-	// } else {
-	// 	proto = "v6"
-	// 	network = "ip6:ipv6-icmp"
-	// }
-	if print {
-		_, _ = fmt.Fprintf(os.Stdout, "PING %s (%s) %d(%d) bytes of data.\n", host, addr, i.opts.size, i.opts.size+28)
-	}
+	_, _ = fmt.Fprintf(options.Log, "PING %s (%s) %d(%d) bytes of data.\n", host, addr, options.size, options.size+28)
 
-Loop:
-	for seq := 0; seq < i.opts.count; seq++ {
+	for seq := 0; seq < options.count; seq++ {
 		select {
 		case <-ctx.Done():
-			if print {
-				_, _ = fmt.Fprintf(os.Stdout, "\n")
-			}
-			break Loop
+			_, _ = fmt.Fprintf(options.Log, "\n")
+			return stats, ctx.Err()
 		default:
-			if seq != 0 {
-				time.Sleep(100 * time.Millisecond)
-			}
-			stat := &EchoStat{}
-			stat, err = i.echo(ctx, addr, seq)
-			stats.update(stat)
-			if !print {
-				continue
-			}
+			stat, err := i.echo(ctx, addr, seq, opts...)
 			if err != nil {
-				_, _ = fmt.Fprintf(os.Stdout, "%v\n", err)
-			} else {
-				_, _ = fmt.Fprintf(os.Stdout, "%d bytes from %s: icmp_seq=%d ttl=%d time=%s\n", i.opts.size, addr, stat.Seq, stat.TTL, stat.Cost)
+				return stats, err
 			}
+			stats.update(stat)
+
+			_, _ = fmt.Fprintf(options.Log, "%d bytes from %s: icmp_seq=%d ttl=%d time=%.3fms\n", options.size, addr, stat.Seq, stat.TTL, stat.Cost.Seconds()*1000)
+
+			time.Sleep(1 * time.Second)
+
 		}
 	}
-	if print {
-		stats.Print(os.Stdout)
-	}
+
 	return stats, err
 }
 
-// Echo send one icmp packet
-func (i *ICMP) Echo(ctx context.Context, addr string) (*EchoStat, error) {
-	seq := int(time.Now().UnixNano()) % 65536
-	return i.echo(ctx, addr, seq)
-}
+func (i *ICMP) echo(ctx context.Context, addr *net.IPAddr, seq int, opts ...Option) (*EchoStat, error) {
+	options := newOptions(i.opts, opts...)
 
-func (i *ICMP) echo(ctx context.Context, addr string, seq int) (*EchoStat, error) {
-	if seq > 65535 {
-		return nil, fmt.Errorf("Invalid ICMP Sequence number. Value must be 0<=N<2^16")
-	}
-	conn, err := net.Dial("ip4:icmp", addr)
+	seq = seq % 65536
+
+	conn, err := net.DialIP("ip4:icmp", nil, addr)
 	if err != nil {
 		return nil, fmt.Errorf("dial fail: %v", err)
 	}
@@ -145,24 +95,23 @@ func (i *ICMP) echo(ctx context.Context, addr string, seq int) (*EchoStat, error
 		Body: &icmp.Echo{
 			ID:   i.ID,
 			Seq:  seq,
-			Data: bytes.Repeat([]byte("x"), i.opts.size),
+			Data: bytes.Repeat([]byte("x"), options.size),
 		},
 	}
-	payload, err := pkt.Marshal(nil)
+	content, err := pkt.Marshal(nil)
 	if err != nil {
 		return nil, err
 	}
 
-	conn.SetDeadline(time.Now().Add(i.opts.timeout))
+	if err := conn.SetDeadline(time.Now().Add(options.timeout)); err != nil {
+		return nil, err
+	}
 
 	now := time.Now()
 
-	size, err := conn.Write(payload)
-	if err != nil {
+	size, err := conn.Write(content)
+	if err != nil || size != len(content) {
 		return nil, fmt.Errorf("sendto: %v", err)
-	}
-	if size != len(payload) {
-		return nil, errors.New("send ping data err")
 	}
 
 	for {
@@ -174,10 +123,11 @@ func (i *ICMP) echo(ctx context.Context, addr string, seq int) (*EchoStat, error
 			_, err := conn.Read(ipbuf)
 
 			if err != nil {
-				if opt, ok := err.(*net.OpError); ok && opt.Timeout() {
-					return nil, fmt.Errorf("Request timeout for icmp_seq %d", seq)
+				var opt *net.OpError
+				if errors.As(err, &opt) && opt.Timeout() {
+					return nil, fmt.Errorf("request timeout for icmp_seq %d", seq)
 				}
-				return nil, fmt.Errorf("Read Fail: %w", err)
+				return nil, fmt.Errorf("read Fail: %w", err)
 			}
 
 			head, err := ipv4.ParseHeader(ipbuf)
@@ -185,7 +135,7 @@ func (i *ICMP) echo(ctx context.Context, addr string, seq int) (*EchoStat, error
 				return nil, err
 			}
 
-			if head.Src.String() != addr {
+			if head.Src.String() != addr.String() {
 				continue
 			}
 
@@ -197,7 +147,7 @@ func (i *ICMP) echo(ctx context.Context, addr string, seq int) (*EchoStat, error
 			switch msg.Type {
 			case ipv4.ICMPTypeEcho:
 				continue
-			case ipv4.ICMPTypeEchoReply, ipv6.ICMPTypeEchoReply:
+			case ipv4.ICMPTypeEchoReply:
 				echo, ok := msg.Body.(*icmp.Echo)
 				if !ok {
 					return nil, errors.New("ping recv err reply data")
@@ -208,7 +158,7 @@ func (i *ICMP) echo(ctx context.Context, addr string, seq int) (*EchoStat, error
 				return &EchoStat{echo.Seq, head.TTL, time.Since(now)}, nil
 
 			case ipv4.ICMPTypeDestinationUnreachable:
-				return nil, fmt.Errorf("From %s icmp_seq=%d Destination Unreachable", addr, seq)
+				return nil, fmt.Errorf("from %s icmp_seq=%d Destination Unreachable", addr, seq)
 			case ipv4.ICMPTypeTimeExceeded:
 				_, ok := msg.Body.(*icmp.TimeExceeded)
 				if !ok {
@@ -216,13 +166,8 @@ func (i *ICMP) echo(ctx context.Context, addr string, seq int) (*EchoStat, error
 
 				}
 				return nil, errors.New("TimeExceeded")
-				// if len(rply.Data) > 24 {
-				// 	if uint16(seq) == binary.BigEndian.Uint16(rply.Data[24:26]) {
-				// 		return &EchoStat{seq, head.TTL, time.Since(now)}
-				// 	}
-				// }
 			default:
-				return nil, fmt.Errorf("Not ICMPTypeEchoReply seq=%d, %#v, %#v", seq, msg, msg.Body)
+				return nil, fmt.Errorf("not ICMPTypeEchoReply seq=%d, %#v, %#v", seq, msg, msg.Body)
 			}
 		}
 	}
